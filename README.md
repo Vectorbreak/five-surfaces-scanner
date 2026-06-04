@@ -13,6 +13,8 @@ Interactive dashboard — paste an MCP config (or click **Load sample**), toggle
 
 **[Open the live dashboard →](https://vectorbreak.github.io/five-surfaces-scanner/web/)**
 
+![Five Surfaces Scanner dashboard — sample MCP config scanned across all five surfaces, showing risk score, per-surface breakdown, and prioritized findings](docs/screenshot.png)
+
 ---
 
 ## Why this exists

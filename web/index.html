@@ -95,8 +95,8 @@
   <header>
     <div class="logo">V/</div>
     <div class="brand">
-      <h1>Five Surfaces Scanner <span style="color:var(--faint);font-weight:500;font-size:13px">by <span class="vb">Vectorbreak Security</span></span></h1>
-      <p>MCP &amp; AI-agent config security — Model · Context · Tools · Identity · Output</p>
+      <h1>Five Surfaces Config Scanner <span style="color:var(--faint);font-weight:500;font-size:13px">by <span class="vb">Vectorbreak Security</span></span></h1>
+      <p>Static MCP &amp; AI-agent config checks — Input/Output · Retrieval · Tool-Call/MCP · Model · Runtime</p>
     </div>
     <div class="spacer"></div>
     <button class="ghost" id="sampleBtn">Load sample</button>
@@ -221,14 +221,15 @@
      SARIF export button .... #exSarif
      error box .............. #errbox
      file upload ............ #file
-     surface toggles ........ #surf_MODEL #surf_CONTEXT #surf_TOOLS #surf_IDENTITY #surf_OUTPUT
+     surface toggles ........ #surf_FS1 #surf_FS2 #surf_FS3 #surf_FS4 #surf_FS5
      check toggles .......... #chk_secrets #chk_transport #chk_danger #chk_collision
                               #chk_injection #chk_context #chk_exfil
      keyword fields ......... #dangerKw #ctxKw #outKw
      min severity ........... #minSev
    ========================================================================= */
 
-var SURFACES = ["MODEL","CONTEXT","TOOLS","IDENTITY","OUTPUT"];
+var SURFACES = ["FS1","FS2","FS3","FS4","FS5"];
+var SURFACE_NAMES = {FS1:"Input/Output", FS2:"Retrieval", FS3:"Tool-Call/MCP", FS4:"Model", FS5:"Runtime"};
 var SEVRANK  = {HIGH:0, MEDIUM:1, LOW:2};
 
 var INJECTION = ["ignore previous instructions","ignore the above","disregard",
@@ -246,15 +247,15 @@ var SECRET_VALS = [
   [/[A-Za-z0-9_\-]{32,}/, "High-entropy secret-like string"]
 ];
 
-// Checks, mirroring the Python surfaces. `def` = default-on.
+// Checks, mirroring five_surfaces_scanner.py, mapped to canonical surfaces. `def` = default-on.
 var CHECKS = [
-  {id:"secrets",   label:"Secret / credential leakage", sub:"keys & tokens in env",         surface:"IDENTITY", def:true},
-  {id:"transport", label:"Unsafe transport / exposure", sub:"http://, 0.0.0.0, missing auth", surface:"IDENTITY", def:true},
-  {id:"danger",    label:"Dangerous tool capabilities", sub:"exec, shell, delete…",          surface:"TOOLS",    def:true},
-  {id:"collision", label:"Tool impersonation",          sub:"duplicate tool names",          surface:"TOOLS",    def:true},
-  {id:"injection", label:"Prompt injection in metadata",sub:"tool descriptions",             surface:"MODEL",    def:true},
-  {id:"context",   label:"Untrusted context sources",   sub:"fetch / url tools",             surface:"CONTEXT",  def:true},
-  {id:"exfil",     label:"Outbound / exfiltration",     sub:"send / upload tools",           surface:"OUTPUT",   def:true}
+  {id:"secrets",   label:"Secret / credential leakage", sub:"keys & tokens in config",       surface:"FS5", def:true},
+  {id:"transport", label:"Unsafe transport / exposure", sub:"http://, 0.0.0.0, missing auth", surface:"FS5", def:true},
+  {id:"danger",    label:"Dangerous tool capabilities", sub:"exec, shell, delete…",          surface:"FS3", def:true},
+  {id:"collision", label:"Tool impersonation",          sub:"duplicate tool names",          surface:"FS3", def:true},
+  {id:"injection", label:"Tool-description poisoning",   sub:"injection text in tool metadata", surface:"FS3", def:true},
+  {id:"context",   label:"Untrusted retrieval sources",  sub:"fetch / url tools",             surface:"FS2", def:true},
+  {id:"exfil",     label:"Outbound / exfiltration",      sub:"send / upload tools",           surface:"FS1", def:true}
 ];
 
 /* ---------- small safe helpers ---------- */
@@ -313,7 +314,7 @@ function scan(cfg){
     if (!isObj(server)) continue;
     var loc = "server:" + sname;
 
-    /* IDENTITY: secrets in env */
+    /* FS5 Runtime: secrets-management (credentials in config) */
     if (checkOn("secrets")){
       var env = isObj(server.env) ? server.env : {};
       for (var ek in env){
@@ -321,14 +322,14 @@ function scan(cfg){
         var val = env[ek];
         var kl = asStr(ek).toLowerCase();
         if (SECRET_KEYS.some(function(h){ return kl.indexOf(h) !== -1; })){
-          add("IDENTITY","HIGH","secret-in-config",
-              "Server '"+sname+"' stores a credential in config env var '"+ek+"'. Use a secrets manager / short-lived scoped tokens.",
+          add("FS5","HIGH","secret-in-config",
+              "Server '"+sname+"' stores a credential in config env var '"+ek+"'. Fetch from a secrets store at call time; use short-lived, scoped tokens.",
               loc+".env."+ek);
         }
         if (typeof val === "string"){
           for (var vi=0; vi<SECRET_VALS.length; vi++){
             if (SECRET_VALS[vi][0].test(val)){
-              add("IDENTITY","HIGH","leaked-secret",
+              add("FS5","HIGH","leaked-secret",
                   "Possible "+SECRET_VALS[vi][1]+" hard-coded in '"+sname+"' env '"+ek+"'.",
                   loc+".env."+ek);
               break;
@@ -338,23 +339,23 @@ function scan(cfg){
       }
     }
 
-    /* IDENTITY: transport / exposure */
+    /* FS5 Runtime: transport / exposure at the execution boundary */
     if (checkOn("transport")){
       var url = asStr(server.url || server.endpoint || "");
       if (url.indexOf("http://") === 0){
-        add("IDENTITY","MEDIUM","plaintext-transport",
+        add("FS5","MEDIUM","plaintext-transport",
             "Server '"+sname+"' uses plaintext http:// transport.", loc+".url");
       }
       var serverJson = "";
       try { serverJson = JSON.stringify(server); } catch(e){ serverJson = ""; }
       if (url.indexOf("0.0.0.0") !== -1 || serverJson.indexOf("0.0.0.0") !== -1){
-        add("IDENTITY","MEDIUM","broad-bind",
+        add("FS5","MEDIUM","broad-bind",
             "Server '"+sname+"' appears bound to 0.0.0.0 (publicly exposed).", loc);
       }
       var authKeys = ["auth","headers","token","apiKey","api_key"];
       var hasAuth = authKeys.some(function(k){ return Object.prototype.hasOwnProperty.call(server, k); });
       if (url && !hasAuth){
-        add("IDENTITY","MEDIUM","missing-auth",
+        add("FS5","MEDIUM","missing-auth",
             "Remote server '"+sname+"' has no visible auth configured.", loc);
       }
     }
@@ -369,14 +370,14 @@ function scan(cfg){
       var tloc = loc + ".tool:" + (tname || "?");
 
       if (checkOn("danger") && kwList("dangerKw").some(function(h){ return tl.indexOf(h) !== -1; })){
-        add("TOOLS","HIGH","dangerous-capability",
-            "Tool '"+tname+"' exposes a high-impact capability. Require approval and least-privilege scoping.", tloc);
+        add("FS3","HIGH","dangerous-capability",
+            "Tool '"+tname+"' exposes a high-impact capability. Require out-of-band approval and least-privilege scoping; sandbox code-execution tools.", tloc);
       }
 
       if (checkOn("collision") && tname){
         if (seen[tname] && seen[tname] !== sname){
-          add("TOOLS","HIGH","tool-name-collision",
-              "Tool name '"+tname+"' is defined by both '"+seen[tname]+"' and '"+sname+"' (impersonation risk).", tloc);
+          add("FS3","HIGH","tool-name-collision",
+              "Tool name '"+tname+"' is defined by both '"+seen[tname]+"' and '"+sname+"' (impersonation / privilege-escalation risk).", tloc);
         }
         if (!seen[tname]) seen[tname] = sname;
       }
@@ -384,28 +385,28 @@ function scan(cfg){
       if (checkOn("injection")){
         for (var pi=0; pi<INJECTION.length; pi++){
           if (desc.indexOf(INJECTION[pi]) !== -1){
-            add("MODEL","HIGH","injection-in-tool-desc",
-                "Tool '"+tname+"' description contains prompt-injection text ('"+INJECTION[pi]+"'). Tool metadata is trusted by the model.", tloc);
+            add("FS3","HIGH","tool-description-poisoning",
+                "Tool '"+tname+"' description contains injection-shaped text ('"+INJECTION[pi]+"'). Pin/sanitize descriptions; the model trusts tool metadata.", tloc);
             break;
           }
         }
       }
 
       if (checkOn("context") && kwList("ctxKw").some(function(h){ return tl.indexOf(h) !== -1; })){
-        add("CONTEXT","MEDIUM","untrusted-context-source",
-            "Tool '"+tname+"' fetches external content that enters the prompt. Sanitize and label provenance before reasoning on it.", tloc);
+        add("FS2","MEDIUM","untrusted-retrieval-source",
+            "Tool '"+tname+"' pulls external content into context (indirect-injection sink). Treat retrieved content as data, not instructions; sanitize.", tloc);
       }
 
       if (checkOn("exfil") && kwList("outKw").some(function(h){ return tl.indexOf(h) !== -1; })){
-        add("OUTPUT","MEDIUM","exfiltration-path",
-            "Tool '"+tname+"' can send data outbound. Restrict destinations and scan payloads for secrets.", tloc);
+        add("FS1","MEDIUM","output-exfiltration-path",
+            "Tool '"+tname+"' can send data outbound. Restrict destinations and scan payloads for secrets before egress.", tloc);
       }
     }
   }
   return findings;
 }
 
-/* ---------- realistic sample (triggers a finding on every surface) ---------- */
+/* ---------- realistic sample (triggers findings across surfaces 1,2,3,5) ---------- */
 var SAMPLE = {
   mcpServers: {
     "ops-helper": {
@@ -439,7 +440,7 @@ var HAS_RUN = false;
 
 function buildPanel(){
   $("surfaceToggles").innerHTML = SURFACES.map(function(s){
-    var label = s.charAt(0) + s.slice(1).toLowerCase();
+    var label = s + ' · ' + SURFACE_NAMES[s];
     return '<label class="tog">'+label+
       '<input type="checkbox" id="surf_'+s+'" checked><span class="sw"></span></label>';
   }).join("");
@@ -499,7 +500,7 @@ function render(){
   var bySurface = SURFACES.map(function(s){
     var n = f.filter(function(x){ return x.surface===s; }).length;
     var maxS = Math.max(1, Math.max.apply(null, SURFACES.map(function(ss){ return f.filter(function(x){return x.surface===ss;}).length; })));
-    return bar(s.charAt(0)+s.slice(1).toLowerCase(), n, maxS, "");
+    return bar(SURFACE_NAMES[s], n, maxS, "");
   }).join("");
   $("bySurface").innerHTML = bySurface;
 

@@ -5,13 +5,13 @@
 > Built by [Vectorbreak Security](https://vectorbreak.com). This is the free, open tier. The full commercial scanner (deeper checks + auto-remediation) lives at **[vectorbreak.com](https://vectorbreak.com)**.
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
-[![Live demo](https://img.shields.io/badge/live%20demo-online-22d3ee)](https://onlycrypto305-debug.github.io/five-surfaces-scanner/web/)
+[![Live demo](https://img.shields.io/badge/live%20demo-online-22d3ee)](https://vectorbreak.github.io/five-surfaces-scanner/web/)
 
 ## ▶ Live demo
 
 Interactive dashboard — paste an MCP config (or click **Load sample**), toggle the checks, and scan in your browser. Nothing leaves the page.
 
-**[Open the live dashboard →](https://onlycrypto305-debug.github.io/five-surfaces-scanner/web/)**
+**[Open the live dashboard →](https://vectorbreak.github.io/five-surfaces-scanner/web/)**
 
 ---
 
@@ -38,7 +38,7 @@ Full methodology: **[The Five Surfaces of MCP Security](https://vectorbreak.com/
 No dependencies — just Python 3.10+.
 
 ```bash
-git clone https://github.com/onlycrypto305-debug/five-surfaces-scanner.git
+git clone https://github.com/Vectorbreak/five-surfaces-scanner.git
 cd five-surfaces-scanner
 
 # scan an MCP config

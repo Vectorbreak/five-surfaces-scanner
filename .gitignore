@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# SARIF / scan output
+*.sarif
+
+# Dev & QA scaffolding (kept local, not shipped)
+test.mjs
+qa_test.mjs
+dbg.mjs
+detail.mjs
+_runtest.mjs
+_test_index.html
+_realprobe.txt
+index_probe.txt
+package.json
+package-lock.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

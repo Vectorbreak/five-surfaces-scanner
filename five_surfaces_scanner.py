@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 """
-Five Surfaces Scanner (open / free tier)
-=========================================
-A lightweight, dependency-free security scanner for MCP (Model Context Protocol)
-server configurations and AI-agent tool manifests. Heuristic checks organized by
-the Five Surfaces threat model: Model, Context, Tools, Identity, Output.
+Five Surfaces Config Scanner (open / free, static)
+==================================================
+A lightweight, dependency-free *static* configuration scanner for MCP (Model
+Context Protocol) server configs and AI-agent tool manifests. It flags risky
+configuration before you run dynamic testing, and maps every finding to the
+Five Surfaces methodology by Vectorbreak:
 
-This is the open foundation. Deeper checks + auto-remediation: https://vectorbreak.com
+    Surface 1  Input / Output      (control plane)
+    Surface 2  Retrieval           (data plane)
+    Surface 3  Tool-Call / MCP     (action plane)
+    Surface 4  Model               (base layer)
+    Surface 5  Runtime             (execution boundary)
+
+Scope: this static tool covers configuration-detectable issues on Surfaces 2, 3
+and 5 (plus output paths on Surface 1). Surface 4 and dynamic Surface-3 testing
+require live probing — see the dynamic fuzzer `mcp-fuzzer` and the full
+methodology at https://vectorbreak.com/methodology
 
 Usage:
     python five_surfaces_scanner.py path/to/mcp-config.json
@@ -14,7 +24,7 @@ Usage:
 
 Exit code is non-zero if any HIGH severity findings are present (useful for CI).
 
-(c) Vectorbreak Security — MIT License.
+(c) Vector Break LLC — MIT License.
 """
 from __future__ import annotations
 
@@ -22,11 +32,18 @@ import argparse
 import json
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SURFACES = ("MODEL", "CONTEXT", "TOOLS", "IDENTITY", "OUTPUT")
+# Canonical Five Surfaces (https://vectorbreak.com/methodology)
+SURFACES = {
+    "FS1": "Input/Output",
+    "FS2": "Retrieval",
+    "FS3": "Tool-Call/MCP",
+    "FS4": "Model",
+    "FS5": "Runtime",
+}
 
 # --- heuristic signal sets -------------------------------------------------
 INJECTION_PHRASES = [
@@ -54,7 +71,7 @@ SECRET_VALUE_PATTERNS = [
 
 @dataclass
 class Finding:
-    surface: str
+    surface: str   # FS1..FS5
     severity: str  # HIGH | MEDIUM | LOW
     rule: str
     message: str
@@ -103,33 +120,34 @@ def scan_config(cfg: dict, target: str) -> Report:
     for sname, server in _iter_servers(cfg):
         loc = f"server:{sname}"
 
-        # --- IDENTITY: secrets in env / config ---
+        # --- FS5 Runtime: secrets-management (credentials in config) ---
         env = server.get("env", {})
         if isinstance(env, dict):
             for k, v in env.items():
                 kl = str(k).lower()
                 if any(h in kl for h in SECRET_KEY_HINTS):
-                    rep.add("IDENTITY", "HIGH", "secret-in-config",
+                    rep.add("FS5", "HIGH", "secret-in-config",
                             f"Server '{sname}' stores a credential in config env var '{k}'. "
-                            f"Use a secrets manager / short-lived scoped tokens.", f"{loc}.env.{k}")
+                            f"Fetch from a secrets store at call time; use short-lived, scoped tokens.",
+                            f"{loc}.env.{k}")
                 if isinstance(v, str):
                     for pat, label in SECRET_VALUE_PATTERNS:
                         if pat.search(v):
-                            rep.add("IDENTITY", "HIGH", "leaked-secret",
+                            rep.add("FS5", "HIGH", "leaked-secret",
                                     f"Possible {label} hard-coded in '{sname}' env '{k}'.",
                                     f"{loc}.env.{k}")
                             break
 
-        # --- IDENTITY: transport / exposure ---
+        # --- FS5 Runtime: transport / exposure at the execution boundary ---
         url = str(server.get("url", "") or server.get("endpoint", ""))
         if url.startswith("http://"):
-            rep.add("IDENTITY", "MEDIUM", "plaintext-transport",
+            rep.add("FS5", "MEDIUM", "plaintext-transport",
                     f"Server '{sname}' uses plaintext http:// transport.", f"{loc}.url")
         if "0.0.0.0" in url or "0.0.0.0" in json.dumps(server):
-            rep.add("IDENTITY", "MEDIUM", "broad-bind",
+            rep.add("FS5", "MEDIUM", "broad-bind",
                     f"Server '{sname}' appears bound to 0.0.0.0 (publicly exposed).", loc)
         if url and not any(t in server for t in ("auth", "headers", "token", "apiKey", "api_key")):
-            rep.add("IDENTITY", "MEDIUM", "missing-auth",
+            rep.add("FS5", "MEDIUM", "missing-auth",
                     f"Remote server '{sname}' has no visible auth configured.", loc)
 
         # --- per-tool checks ---
@@ -139,43 +157,46 @@ def scan_config(cfg: dict, target: str) -> Report:
             tl = tname.lower()
             tloc = f"{loc}.tool:{tname or '?'}"
 
-            # TOOLS: dangerous capability
+            # FS3 Tool-Call/MCP: dangerous capability
             if any(h in tl for h in DANGEROUS_TOOL_HINTS):
-                rep.add("TOOLS", "HIGH", "dangerous-capability",
-                        f"Tool '{tname}' exposes a high-impact capability. Require approval "
-                        f"and least-privilege scoping.", tloc)
+                rep.add("FS3", "HIGH", "dangerous-capability",
+                        f"Tool '{tname}' exposes a high-impact capability. Require out-of-band "
+                        f"approval and least-privilege scoping; sandbox code-execution tools.", tloc)
 
-            # TOOLS: impersonation / name collision
+            # FS3 Tool-Call/MCP: tool impersonation / name collision (confused deputy)
             if tname:
                 if tname in seen_tool_names and seen_tool_names[tname] != sname:
-                    rep.add("TOOLS", "HIGH", "tool-name-collision",
+                    rep.add("FS3", "HIGH", "tool-name-collision",
                             f"Tool name '{tname}' is defined by both '{seen_tool_names[tname]}' "
-                            f"and '{sname}' (impersonation risk).", tloc)
+                            f"and '{sname}' (impersonation / privilege-escalation risk).", tloc)
                 seen_tool_names[tname] = sname
 
-            # MODEL / CONTEXT: injection phrases in description
+            # FS3 Tool-Call/MCP: tool-description poisoning
             dl = desc.lower()
             for phrase in INJECTION_PHRASES:
                 if phrase in dl:
-                    rep.add("MODEL", "HIGH", "injection-in-tool-desc",
-                            f"Tool '{tname}' description contains prompt-injection text "
-                            f"('{phrase}'). Tool metadata is trusted by the model.", tloc)
+                    rep.add("FS3", "HIGH", "tool-description-poisoning",
+                            f"Tool '{tname}' description contains injection-shaped text "
+                            f"('{phrase}'). Pin/sanitize descriptions; the model trusts tool metadata.",
+                            tloc)
                     break
 
-            # CONTEXT: pulls untrusted external content
+            # FS2 Retrieval: untrusted external content becomes an indirect-injection sink
             if any(h in tl for h in CONTEXT_FETCH_HINTS):
-                rep.add("CONTEXT", "MEDIUM", "untrusted-context-source",
-                        f"Tool '{tname}' fetches external content that enters the prompt. "
-                        f"Sanitize and label provenance before reasoning on it.", tloc)
+                rep.add("FS2", "MEDIUM", "untrusted-retrieval-source",
+                        f"Tool '{tname}' pulls external content into context (indirect-injection "
+                        f"sink). Treat retrieved content as data, not instructions; sanitize.", tloc)
 
-            # OUTPUT: exfiltration path
+            # FS1 Input/Output: outbound / exfiltration path
             if any(h in tl for h in OUTPUT_EXFIL_HINTS):
-                rep.add("OUTPUT", "MEDIUM", "exfiltration-path",
+                rep.add("FS1", "MEDIUM", "output-exfiltration-path",
                         f"Tool '{tname}' can send data outbound. Restrict destinations and "
-                        f"scan payloads for secrets.", tloc)
+                        f"scan payloads for secrets before egress.", tloc)
 
     if not rep.findings:
-        rep.add("MODEL", "LOW", "clean", "No heuristic issues found. Run the full scanner for deep checks.", target)
+        rep.add("FS3", "LOW", "clean",
+                "No config-level issues found. Static checks only — run dynamic "
+                "Surface-3 testing (mcp-fuzzer) and a full Five Surfaces review for depth.", target)
     return rep
 
 
@@ -184,17 +205,18 @@ _SEV_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
 
 
 def print_report(rep: Report) -> None:
-    print(f"\nFive Surfaces Scanner — {rep.target}")
-    print("=" * 60)
+    print(f"\nFive Surfaces Config Scanner — {rep.target}")
+    print("=" * 64)
     for f in sorted(rep.findings, key=lambda x: (_SEV_ORDER[x.severity], x.surface)):
         mark = "✗" if f.severity in ("HIGH", "MEDIUM") else "✓"
-        print(f"  {mark} {f.surface:<8} {f.severity:<6} {f.message}")
+        label = f"{f.surface} {SURFACES[f.surface]}"
+        print(f"  {mark} {label:<20} {f.severity:<6} {f.message}")
         if f.location:
             print(f"        ↳ {f.location}  [{f.rule}]")
     highs = rep.high
     total = len([f for f in rep.findings if f.rule != "clean"])
-    print("-" * 60)
-    print(f"  {total} finding(s), {highs} high.  Full scanner + fixes: https://vectorbreak.com")
+    print("-" * 64)
+    print(f"  {total} finding(s), {highs} high.  Methodology + full review: https://vectorbreak.com/methodology")
 
 
 def to_sarif(rep: Report) -> dict:
@@ -210,16 +232,16 @@ def to_sarif(rep: Report) -> dict:
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
         "runs": [{
-            "tool": {"driver": {"name": "Five Surfaces Scanner",
-                                "informationUri": "https://vectorbreak.com",
-                                "version": "0.1.0"}},
+            "tool": {"driver": {"name": "Five Surfaces Config Scanner",
+                                "informationUri": "https://vectorbreak.com/methodology",
+                                "version": "0.2.0"}},
             "results": results,
         }],
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Five Surfaces Scanner for MCP/agent configs.")
+    ap = argparse.ArgumentParser(description="Five Surfaces Config Scanner for MCP/agent configs (static).")
     ap.add_argument("path", help="Path to an MCP config JSON file")
     ap.add_argument("--sarif", metavar="FILE", help="Write SARIF results to FILE")
     args = ap.parse_args(argv)

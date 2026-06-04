@@ -1,8 +1,8 @@
-# Five Surfaces Scanner
+# Five Surfaces Config Scanner
 
-**Open-source security scanner for MCP (Model Context Protocol) servers and AI-agent configs.** Finds the issues that actually get agents owned — prompt-injection sinks, tool impersonation, credential leakage, and unsafe configuration — organized by the **Five Surfaces** threat model.
+**A free, static configuration scanner for MCP (Model Context Protocol) servers and AI-agent manifests.** It flags risky configuration — tool-description poisoning, dangerous capabilities, tool impersonation, untrusted retrieval sources, outbound exfiltration paths, and exposed secrets/transport — and maps every finding to the **[Five Surfaces methodology](https://vectorbreak.com/methodology)** by Vectorbreak.
 
-> Built by [Vectorbreak Security](https://vectorbreak.com). This is the free, open tier. The full commercial scanner (deeper checks + auto-remediation) lives at **[vectorbreak.com](https://vectorbreak.com)**.
+> This is a lightweight, static *first pass* — heuristics over your config, run in your browser or in CI. It is **not** a replacement for dynamic testing or a full assessment. For dynamic Surface-3 fuzzing see **[mcp-fuzzer](https://vectorbreak.com/mcp-fuzzer)**; for an assessment across all five surfaces see the **[methodology](https://vectorbreak.com/methodology)** and Vectorbreak's engagements.
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 [![Live demo](https://img.shields.io/badge/live%20demo-online-22d3ee)](https://vectorbreak.github.io/five-surfaces-scanner/web/)
@@ -13,27 +13,7 @@ Interactive dashboard — paste an MCP config (or click **Load sample**), toggle
 
 **[Open the live dashboard →](https://vectorbreak.github.io/five-surfaces-scanner/web/)**
 
-![Five Surfaces Scanner dashboard — sample MCP config scanned across all five surfaces, showing risk score, per-surface breakdown, and prioritized findings](docs/screenshot.png)
-
----
-
-## Why this exists
-
-The moment you connect a language model to real tools and data — increasingly through MCP — you inherit an attack surface traditional app-security tooling wasn't built for. A single poisoned input can make an agent **leak credentials, impersonate a tool, or take actions nobody approved.**
-
-Most "AI security" advice still treats LLMs like web apps. They aren't. This scanner checks the five places MCP/agent systems actually break.
-
-## The Five Surfaces
-
-| # | Surface | What it covers | Example checks |
-|---|---------|----------------|----------------|
-| 1 | **Model** | What the model can be talked into | prompt-injection text in tool descriptions/metadata |
-| 2 | **Context** | What reaches the prompt (and who controls it) | tools that pull untrusted external content |
-| 3 | **Tools** | What the agent can actually do | dangerous capabilities, tool name collisions/impersonation |
-| 4 | **Identity** | Whose authority the agent acts with | secrets in config, plaintext transport, missing auth, broad bind |
-| 5 | **Output** | What leaves the system, and to whom | outbound/exfiltration-capable tools |
-
-Full methodology: **[The Five Surfaces of MCP Security](https://vectorbreak.com/five-surfaces)**
+![Five Surfaces Config Scanner dashboard — sample MCP config scanned, showing risk score, per-surface breakdown, and prioritized findings](docs/screenshot.png)
 
 ## Quick start
 
@@ -52,37 +32,47 @@ python five_surfaces_scanner.py examples/sample-mcp-config.json --sarif results.
 
 Exit code is non-zero when HIGH-severity findings exist, so it drops straight into CI.
 
+## What it checks, by surface
+
+The Five Surfaces methodology structures AI-agent risk by *where execution happens*: **1 Input/Output, 2 Retrieval, 3 Tool-Call/MCP, 4 Model, 5 Runtime** (69 risk classes total). This static scanner covers the subset that is visible in configuration:
+
+| Surface | What this scanner checks (static) | Example findings |
+|---|---|---|
+| **1 · Input/Output** | Outbound channels that can leak data | `send_*`/`upload`/`webhook` tools (output-exfiltration path) |
+| **2 · Retrieval** | Tools that pull untrusted content into context | `fetch`/`http`/`scrape` tools (indirect-injection sink) |
+| **3 · Tool-Call/MCP** | Tool poisoning, dangerous capabilities, impersonation | injection-shaped tool descriptions; `exec`/`shell` tools; duplicate tool names |
+| **4 · Model** | *Out of scope for a static scanner* | needs dynamic probing — see mcp-fuzzer / methodology |
+| **5 · Runtime** | Secrets & transport at the execution boundary | credentials in config, plaintext `http://`, `0.0.0.0` bind, missing auth |
+
+Findings are heuristics tuned to catch the common, high-frequency mistakes fast. They are not a guarantee, and they are **defensive only** — the scanner detects risky configuration, it does not generate attacks.
+
 ## Example output
 
 ```
-Five Surfaces Scanner — examples/sample-mcp-config.json
-============================================================
-  ✗ IDENTITY HIGH   Server 'ops-helper' stores a credential in config env var 'OPENAI_API_KEY'.
-  ✗ MODEL    HIGH   Tool 'lookup' description contains prompt-injection text.
-  ✗ TOOLS    HIGH   Tool 'run_command' exposes a high-impact capability.
-  ✗ TOOLS    HIGH   Tool name 'fetch_url' is defined by two servers (impersonation risk).
-  ✗ CONTEXT  MEDIUM Tool 'fetch_url' fetches external content that enters the prompt.
-  ✗ OUTPUT   MEDIUM Tool 'send_email' can send data outbound.
-------------------------------------------------------------
-  12 finding(s), 6 high.  Full scanner + fixes: https://vectorbreak.com
+Five Surfaces Config Scanner — examples/sample-mcp-config.json
+================================================================
+  ✗ FS5 Runtime        HIGH   Server 'ops-helper' stores a credential in config env var 'OPENAI_API_KEY'.
+  ✗ FS3 Tool-Call/MCP  HIGH   Tool 'lookup' description contains injection-shaped text.
+  ✗ FS3 Tool-Call/MCP  HIGH   Tool 'run_command' exposes a high-impact capability.
+  ✗ FS3 Tool-Call/MCP  HIGH   Tool name 'fetch_url' is defined by two servers (impersonation risk).
+  ✗ FS2 Retrieval      MEDIUM Tool 'fetch_url' pulls external content into context.
+  ✗ FS1 Input/Output   MEDIUM Tool 'send_email' can send data outbound.
+----------------------------------------------------------------
+  ... finding(s).  Methodology + full review: https://vectorbreak.com/methodology
 ```
 
-## What it checks (free tier)
+## How this fits the bigger picture
 
-- Prompt-injection text in tool descriptions and metadata (Model)
-- Tools that pull untrusted external content into context (Context)
-- Dangerous tool capabilities and tool-name collisions / impersonation (Tools)
-- Secrets in config, plaintext transport, missing auth, public bind (Identity)
-- Outbound / exfiltration-capable tools (Output)
-- SARIF output for CI / GitHub code scanning
-
-These are heuristics meant to catch the common, high-frequency mistakes fast. The commercial scanner adds dynamic testing and auto-remediation.
+- **This tool** — free, static, config-level. A fast first pass and an on-ramp to the framework.
+- **[mcp-fuzzer](https://vectorbreak.com/mcp-fuzzer)** — Vectorbreak's open-source *dynamic* fuzzer for Surface 3 (tool poisoning, parameter injection, privilege escalation, prompt-to-RCE).
+- **[Five Surfaces methodology](https://vectorbreak.com/methodology)** — the canonical framework: 5 surfaces, 69 risk classes, 139 validated tests, mapped to OWASP-LLM-Top-10 and MITRE-ATLAS.
+- **Vectorbreak engagements** — fixed-fee red-team assessments across all five surfaces, training, and custom defensive builds.
 
 ## Roadmap
 
 - [ ] More MCP client config formats
-- [ ] Additional per-surface check packs
-- [ ] Auto-remediation suggestions (full version)
+- [ ] Additional config-level checks per surface
+- [ ] Tighter alignment of finding IDs to the Five Surfaces risk-class taxonomy
 
 ## Contributing
 
@@ -94,5 +84,6 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-### About Vectorbreak Security
-We help teams ship AI and MCP products without shipping the vulnerabilities that come with them — red-team assessments, MCP supply-chain audits, and incident response for LLM/agent systems. Creators of the Five Surfaces framework. → **[vectorbreak.com](https://vectorbreak.com)** · Lance@Vectorbreak.com
+### About Vectorbreak
+
+Vectorbreak provides productized red-teaming, defensive engineering, and training for agentic and RAG-enabled AI systems, built on the Five Surfaces methodology. → **[vectorbreak.com](https://vectorbreak.com)**
